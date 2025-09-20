@@ -1,46 +1,67 @@
-from __future__ import annotations
+# app/streamlit_app.py
+import os
+import sys
 import joblib
-import pandas as pd
 import streamlit as st
+import pandas as pd
+import numpy as np
 
+# --- Fix Python path so we can import from src ---
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-st.set_page_config(page_title="SmartPremium – Insurance Premium Predictor", page_icon="💰")
-st.title("SmartPremium – Insurance Premium Predictor")
+from src.features import build_features  # now works
 
+# --- Load model ---
+MODEL_PATH = "artifacts/premium_model_stacked.joblib"
 
-model = joblib.load("artifacts/premium_model.joblib")
+@st.cache_resource
+def load_model():
+    if not os.path.exists(MODEL_PATH):
+        st.error(f"❌ Model file not found at {MODEL_PATH}. Please run `python -m src.train` first.")
+        st.stop()
+    return joblib.load(MODEL_PATH)
 
-col1, col2 = st.columns(2)
-age = col1.number_input("Age", 18, 100, 30)
-income = col2.number_input("Annual Income", 10_000, 10_000_000, 500_000)
-health = col1.slider("Health Score", 1, 100, 70)
-claims = col2.number_input("Previous Claims", 0, 50, 0)
-vehicle_age = col1.number_input("Vehicle Age (years)", 0, 30, 5)
-credit = col2.number_input("Credit Score", 300, 850, 650)
-duration = col1.number_input("Insurance Duration (years)", 0, 50, 5)
-dependents = col2.number_input("Number of Dependents", 0, 10, 0)
+model = load_model()
 
+# --- Streamlit UI ---
+st.set_page_config(page_title="Insurance Premium Predictor", layout="centered")
+st.title("💰 Insurance Premium Prediction App")
 
-policy_type = col1.selectbox("Policy Type", ["Basic", "Comprehensive", "Premium"])
-gender = col2.selectbox("Gender", ["Male", "Female"])
-location = col1.selectbox("Location", ["Urban", "Suburban", "Rural"])
+st.markdown("Enter customer details below to estimate the insurance premium:")
 
+# Collect inputs
+age = st.number_input("Age", min_value=18, max_value=100, value=30)
+income = st.number_input("Annual Income", min_value=1000, max_value=1000000, value=50000)
+health = st.slider("Health Score", min_value=1, max_value=10, value=5)
+credit = st.slider("Credit Score", min_value=300, max_value=850, value=650)
+claims = st.number_input("Previous Claims", min_value=0, max_value=50, value=1)
+vehicle_age = st.number_input("Vehicle Age (years)", min_value=0, max_value=30, value=5)
 
-if st.button("Predict Premium"):
-    X = pd.DataFrame([
-    {
-    "Age": age,
-    "Annual Income": income,
-    "Health Score": health,
-    "Previous Claims": claims,
-    "Vehicle Age": vehicle_age,
-    "Credit Score": credit,
-    "Insurance Duration": duration,
-    "Number of Dependents": dependents,
-    "Policy Type": policy_type,
-    "Gender": gender,
-    "Location": location,
-    }
-    ])
-pred = float(model.predict(X)[0])
-st.success(f"Predicted Premium Amount: ₹ {pred:,.2f}")
+policy_type = st.selectbox("Policy Type", ["Type A", "Type B", "Type C"])
+property_type = st.selectbox("Property Type", ["House", "Apartment", "Condo"])
+occupation = st.selectbox("Occupation", ["Engineer", "Doctor", "Teacher", "Other"])
+location = st.selectbox("Location", ["Urban", "Suburban", "Rural"])
+
+# Predict button
+if st.button("🔮 Predict Premium"):
+    # Build dataframe
+    data = pd.DataFrame([{
+        "Age": age,
+        "Annual Income": income,
+        "Health Score": health,
+        "Credit Score": credit,
+        "Previous Claims": claims,
+        "Vehicle Age": vehicle_age,
+        "Policy Type": policy_type,
+        "Property Type": property_type,
+        "Occupation": occupation,
+        "Location": location
+    }])
+
+    # Feature engineering
+    preprocessor, X_test, _, _ = build_features(data)
+
+    # Make prediction (model was trained on log scale)
+    pred_log = model.predict(X_test)
+    pred = float(np.clip(np.expm1(pred_log[0]), 100, 1300))  # ✅ fixed
+    st.success(f"💵 Estimated Premium: **${pred:,.2f}**")
