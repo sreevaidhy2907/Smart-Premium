@@ -1,88 +1,67 @@
-from __future__ import annotations
-import joblib
+# src/train.py
 import os
-import pandas as pd
+import joblib
 import numpy as np
-from sklearn.compose import ColumnTransformer
-from sklearn.model_selection import KFold, cross_validate
+import pandas as pd
+from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor, StackingRegressor
+from sklearn.linear_model import Ridge
 from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import OneHotEncoder, StandardScaler
-from xgboost import XGBRegressor
-from src.features import DateFeatures, TextLength
-from src.schema import schema
+from sklearn.model_selection import cross_val_score, KFold
+import mlflow
+import mlflow.sklearn
 
-SEED = 42
+from src.features import build_features
+
+TRAIN_PATH = "data/train.csv"
+ARTIFACT_PATH = "artifacts/premium_model_stacked.joblib"
 
 
-def build_pipeline(df: pd.DataFrame) -> Pipeline:
-    target_col = schema["target"]
-    X = df.drop(columns=[target_col])
+def main():
+    print("📂 Loading data...")
+    df = pd.read_csv(TRAIN_PATH)
 
-    num_cols = [c for c in schema["numeric"] if c in X.columns]
-    cat_cols = [c for c in schema["categorical"] if c in X.columns]
-    text_cols = [c for c in schema["text"] if c in X.columns]
-    date_cols = [c for c in schema["datetime"] if c in X.columns]
+    print("🔧 Building features...")
+    preprocessor, X, y_log, _ = build_features(df)
 
-    pre = ColumnTransformer(
-        transformers=[
-            ("num", StandardScaler(), num_cols),
-            ("cat", OneHotEncoder(handle_unknown="ignore"), cat_cols),
-        ],
-        remainder="drop",
+    # Define base models
+    base_models = [
+        ("rf", RandomForestRegressor(n_estimators=50, max_depth=8, random_state=42, n_jobs=-1)),
+        ("gb", GradientBoostingRegressor(n_estimators=200, learning_rate=0.05, max_depth=5, random_state=42))
+    ]
+    final_estimator = Ridge(alpha=1.0)
+
+    # Stacking ensemble
+    model = StackingRegressor(
+        estimators=base_models,
+        final_estimator=final_estimator,
+        passthrough=True,
+        n_jobs=-1
     )
 
-    steps = []
-    if date_cols:
-        steps.append(("date", DateFeatures(date_cols[0])))
-    if text_cols:
-        steps.append(("text", TextLength(text_cols[0])))
-
-    steps.extend([
-        ("pre", pre),
-        ("model", XGBRegressor(
-            n_estimators=600,
-            max_depth=6,
-            learning_rate=0.06,
-            subsample=0.8,
-            colsample_bytree=0.8,
-            random_state=SEED,
-            tree_method="hist",
-        )),
+    pipe = Pipeline([
+        ("preprocessor", preprocessor),
+        ("regressor", model)
     ])
 
-    return Pipeline(steps)
+    print("🔹 Training Stacking Ensemble Model (Premium Prediction)...")
+    cv = KFold(n_splits=3, shuffle=True, random_state=42)
+    scores = cross_val_score(pipe, X, y_log, cv=cv, scoring="r2", n_jobs=-1)
 
+    print(f"Stacking CV R²: {scores.mean():.3f} ± {scores.std():.3f}")
 
-def main() -> None:
-    df = pd.read_csv("data/train.csv")
-    target_col = schema["target"]
-    pipe = build_pipeline(df)
+    # Fit final pipeline
+    pipe.fit(X, y_log)
 
-    X = df.drop(columns=[target_col])
-    y = np.log1p(df[target_col])
-
-    # Cross-validation with multiple metrics
-    cv = KFold(n_splits=5, shuffle=True, random_state=SEED)
-    scoring = {
-        "MAE": "neg_mean_absolute_error",
-        "RMSE": "neg_root_mean_squared_error",
-        "R2": "r2",
-    }
-    cv_res = cross_validate(pipe, X, y, cv=cv, scoring=scoring, n_jobs=-1)
-
-    mae_mean, mae_std = -cv_res["test_MAE"].mean(), cv_res["test_MAE"].std()
-    rmse_mean, rmse_std = -cv_res["test_RMSE"].mean(), cv_res["test_RMSE"].std()
-    r2_mean, r2_std = cv_res["test_R2"].mean(), cv_res["test_R2"].std()
-
-    print(f"CV MAE : {mae_mean:.3f} ± {mae_std:.3f}")
-    print(f"CV RMSE: {rmse_mean:.3f} ± {rmse_std:.3f}")
-    print(f"CV R2  : {r2_mean:.3f} ± {r2_std:.3f}")
-
-    # Final fit
-    pipe.fit(X, y)
     os.makedirs("artifacts", exist_ok=True)
-    joblib.dump(pipe, "artifacts/premium_model.joblib")
-    print("✅ Model trained and saved to artifacts/premium_model.joblib")
+    joblib.dump(pipe, ARTIFACT_PATH)
+    print(f"✅ Stacking model trained and saved to {ARTIFACT_PATH}")
+
+    # Log to MLflow
+    with mlflow.start_run(run_name="stacking-train"):
+        mlflow.log_metric("cv_r2_mean", scores.mean())
+        mlflow.log_metric("cv_r2_std", scores.std())
+        mlflow.sklearn.log_model(pipe, "stacking-model")
+        mlflow.log_artifact(ARTIFACT_PATH)
 
 
 if __name__ == "__main__":
