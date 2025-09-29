@@ -1,0 +1,32 @@
+---
+
+## 📄 .gitignore
+
+```gitignore
+# Virtual environment
+.venv/
+env/
+venv/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# IDE settings
+.vscode/
+.idea/
+
+# Data & outputs
+data/*.csv
+!data/sample_submission.csv   # keep sample_submission.csv
+artifacts/
+submission.csv
+
+# MLflow logs
+mlruns/
+
+# OS files
+.DS_Store
+Thumbs.db
